@@ -236,18 +236,16 @@ def detect_watermark_stft(audio, sample_rate, reference_freq=20000, search_freq_
     
     print(f"  Searching {len(search_frequencies)} frequencies from {search_frequencies[0]:.1f} to {search_frequencies[-1]:.1f} Hz")
     
-    # Track the peak (brightest) frequency at each time window
-    detected_freqs = []
-    detected_times = []
+    # Track the peak (brightest) frequency at each time window (vectorized)
+    # Get magnitude values only in our search range
+    search_magnitudes = magnitude[search_freq_indices, :]
     
-    for window_idx in range(magnitude.shape[1]):
-        window_mags = magnitude[search_freq_indices, window_idx]
-        max_idx = np.argmax(window_mags)
-        detected_freqs.append(search_frequencies[max_idx])
-        detected_times.append(times[window_idx])
+    # Find index of maximum magnitude for each time window (axis=0 for frequency axis)
+    max_indices = np.argmax(search_magnitudes, axis=0)
     
-    detected_freqs = np.array(detected_freqs)
-    detected_times = np.array(detected_times)
+    # Map indices back to actual frequencies
+    detected_freqs = search_frequencies[max_indices]
+    detected_times = times
     
     print(f"  Tracked {len(detected_freqs)} time windows")
     
