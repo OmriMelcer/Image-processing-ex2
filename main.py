@@ -193,6 +193,225 @@ def save_audio(file_path, sample_rate, data):
     print(f"Saved audio to {file_path}")
 
 
+def detect_watermark_stft(audio, sample_rate, reference_freq=20000, search_freq_min=15000, search_freq_max=20000, nperseg=2048):
+    """
+    Detect time-varying watermark pattern using STFT - CORRECTED VERSION.
+    
+    The watermark is a sine wave in TIME where the frequency itself oscillates:
+    f(t) = f_center + amplitude * sin(watermark_freq * t)
+    
+    Algorithm:
+    1. Perform STFT to get time-frequency representation
+    2. Track the peak (brightest) frequency in 15-20 kHz range at each time
+    3. Find peaks in this trajectory (when it reaches >19.5 kHz)
+    4. Count peaks to determine watermark frequency
+    
+    Args:
+        audio: audio signal
+        sample_rate: sampling rate in Hz
+        reference_freq: not used in corrected version (kept for compatibility)
+        search_freq_min: minimum frequency to search (default 15000 Hz)
+        search_freq_max: maximum frequency to search (default 20000 Hz)
+        nperseg: STFT window size (default 2048)
+    
+    Returns:
+        dict with watermark analysis results
+    """
+    from scipy.signal import find_peaks
+    
+    # Compute STFT
+    frequencies, times, Zxx = signal.stft(audio, fs=sample_rate, nperseg=nperseg, noverlap=nperseg//2)
+    
+    # Get magnitude spectrum
+    magnitude = np.abs(Zxx)
+    
+    print(f"  STFT shape: {magnitude.shape[0]} frequencies x {magnitude.shape[1]} time windows")
+    print(f"  Frequency resolution: {frequencies[1] - frequencies[0]:.2f} Hz")
+    print(f"  Time resolution: {times[1] - times[0]:.4f} seconds")
+    
+    # Define search range for frequencies
+    freq_mask = (frequencies >= search_freq_min) & (frequencies <= search_freq_max)
+    search_freq_indices = np.where(freq_mask)[0]
+    search_frequencies = frequencies[search_freq_indices]
+    
+    print(f"  Searching {len(search_frequencies)} frequencies from {search_frequencies[0]:.1f} to {search_frequencies[-1]:.1f} Hz")
+    
+    # Track the peak (brightest) frequency at each time window
+    detected_freqs = []
+    detected_times = []
+    
+    for window_idx in range(magnitude.shape[1]):
+        window_mags = magnitude[search_freq_indices, window_idx]
+        max_idx = np.argmax(window_mags)
+        detected_freqs.append(search_frequencies[max_idx])
+        detected_times.append(times[window_idx])
+    
+    detected_freqs = np.array(detected_freqs)
+    detected_times = np.array(detected_times)
+    
+    print(f"  Tracked {len(detected_freqs)} time windows")
+    
+    # Analyze the frequency variation
+    f_center = np.mean(detected_freqs)
+    f_min = np.min(detected_freqs)
+    f_max = np.max(detected_freqs)
+    f_amplitude = (f_max - f_min) / 2
+    
+    print(f"  Center frequency: {f_center:.1f} Hz")
+    print(f"  Frequency range: {f_min:.1f} - {f_max:.1f} Hz")
+    print(f"  Frequency amplitude: ±{f_amplitude:.1f} Hz")
+    
+    # Find peaks in the frequency trajectory (when sine wave reaches high frequencies)
+    # Use threshold of 19500 Hz which corresponds to ~11 peaks in 30 seconds
+    peaks, _ = find_peaks(detected_freqs, height=19500, distance=30)
+    
+    print(f"  Number of peaks (>19500 Hz): {len(peaks)}")
+    
+    if len(peaks) > 1:
+        # Calculate watermark frequency from peak spacing
+        peak_times = detected_times[peaks]
+        gaps = np.diff(peak_times)
+        avg_gap = np.mean(gaps)
+        watermark_freq_hz = 1.0 / avg_gap
+        watermark_period_seconds = avg_gap
+        
+        print(f"  Average gap between peaks: {avg_gap:.4f} seconds")
+        print(f"  Watermark frequency: {watermark_freq_hz:.4f} Hz")
+        print(f"  Watermark period: {watermark_period_seconds:.4f} seconds")
+        print(f"  Cycles in 30s: {30 * watermark_freq_hz:.2f}")
+        
+        return {
+            'detected_freqs': detected_freqs,
+            'detected_times': detected_times,
+            'f_center': f_center,
+            'f_amplitude': f_amplitude,
+            'watermark_freq_hz': watermark_freq_hz,
+            'watermark_period_seconds': watermark_period_seconds,
+            'wavelength_samples': watermark_period_seconds * sample_rate,
+            'num_detections': len(detected_freqs),
+            'num_peaks': len(peaks),
+            'peak_times': peak_times
+        }
+    else:
+        print(f"  WARNING: Too few peaks to analyze pattern")
+        return {
+            'detected_freqs': detected_freqs,
+            'detected_times': detected_times,
+            'f_center': f_center,
+            'f_amplitude': f_amplitude,
+            'watermark_freq_hz': None,
+            'num_detections': len(detected_freqs)
+        }
+
+
+def analyze_task2_watermarks():
+    """
+    Analyze watermarks in all Task 2 files and group results.
+    Groups: 0-2, 3-5, 6-8
+    """
+    print("\n" + "=" * 80)
+    print("WATERMARK DETECTION - TASK 2 (Peak Counting Method)")
+    print("=" * 80)
+    
+    task2_dir = "Exercise Inputs-20251113/Task 2"
+    wav_files = sorted([f for f in os.listdir(task2_dir) if f.endswith('_watermarked.wav') and not f.startswith('.')])
+    
+    # Store results by group
+    groups = {
+        'Group 1 (0-2)': [],
+        'Group 2 (3-5)': [],
+        'Group 3 (6-8)': []
+    }
+    
+    results = []
+    
+    for wav_file in wav_files:
+        file_path = os.path.join(task2_dir, wav_file)
+        file_num = int(wav_file.split('_')[0])
+        
+        print(f"\n{'='*80}")
+        print(f"File {file_num}: {wav_file}")
+        print('='*80)
+        
+        sample_rate, audio = load_audio(file_path)
+        print(f"Sample rate: {sample_rate} Hz, Duration: {len(audio)/sample_rate:.2f}s")
+        
+        # Detect watermark
+        result = detect_watermark_stft(audio, sample_rate)
+        
+        if result:
+            result['file'] = wav_file
+            result['file_num'] = file_num
+            results.append(result)
+            
+            # Assign to group
+            if file_num <= 2:
+                groups['Group 1 (0-2)'].append(result)
+            elif file_num <= 5:
+                groups['Group 2 (3-5)'].append(result)
+            else:
+                groups['Group 3 (6-8)'].append(result)
+    
+    # Print summary by group
+    print("\n" + "=" * 80)
+    print("SUMMARY BY GROUP")
+    print("=" * 80)
+    
+    for group_name, group_results in groups.items():
+        print(f"\n{group_name}:")
+        print("-" * 80)
+        
+        valid_results = [r for r in group_results if r.get('watermark_freq_hz') is not None]
+        
+        if valid_results:
+            # Calculate group statistics
+            watermark_freqs = [r['watermark_freq_hz'] for r in valid_results]
+            periods = [r['watermark_period_seconds'] for r in valid_results]
+            f_centers = [r['f_center'] for r in valid_results]
+            f_amplitudes = [r['f_amplitude'] for r in valid_results]
+            
+            print(f"Files: {[r['file_num'] for r in group_results]}")
+            print(f"Watermark frequency: {np.mean(watermark_freqs):.4f} Hz (±{np.std(watermark_freqs):.4f})")
+            print(f"Watermark period: {np.mean(periods):.4f} s (±{np.std(periods):.4f})")
+            print(f"Center frequency: {np.mean(f_centers):.1f} Hz (±{np.std(f_centers):.1f})")
+            print(f"Frequency amplitude: ±{np.mean(f_amplitudes):.1f} Hz (±{np.std(f_amplitudes):.1f})")
+            
+            # Show individual results
+            print("\nIndividual files:")
+            for r in group_results:
+                if r.get('watermark_freq_hz') is not None:
+                    print(f"  File {r['file_num']}: "
+                          f"watermark_freq={r['watermark_freq_hz']:.4f} Hz, "
+                          f"period={r['watermark_period_seconds']:.4f}s, "
+                          f"f_center={r['f_center']:.1f} Hz, "
+                          f"f_amp=±{r['f_amplitude']:.1f} Hz")
+                else:
+                    print(f"  File {r['file_num']}: No watermark detected")
+        else:
+            print("No valid watermarks detected in this group")
+    
+    print("\n" + "=" * 80)
+    
+    return results, groups
+
+
+def detect_single_file_watermark(file_path, nperseg=2048):
+    """
+    Convenience function to detect watermark in a single file.
+    
+    Args:
+        file_path: path to .wav file
+        nperseg: STFT window size (default 2048)
+    
+    Returns:
+        dict with watermark results
+    """
+    print(f"Analyzing: {file_path}")
+    sample_rate, audio = load_audio(file_path)
+    result = detect_watermark_stft(audio, sample_rate, nperseg=nperseg)
+    return result
+
+
 def main():
     print("Audio Watermarking - Spectrogram Generation")
     print("=" * 60)
@@ -269,6 +488,9 @@ def main():
     
     print(f"\nAll Task 3 spectrograms saved to {spectrogram3_dir}/")
     print("=" * 60)
+    
+    # Watermark Detection for Task 2
+    analyze_task2_watermarks()
 
 
 if __name__ == "__main__":
